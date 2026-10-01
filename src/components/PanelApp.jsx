@@ -417,6 +417,7 @@ function DashboardGlobal() {
   var [filtroSeniorityDesemp, setFiltroSeniorityDesemp] = useState("Todos");
   var [filtroColabDesemp, setFiltroColabDesemp] = useState("Todos");
   var [filtroCicloDesemp, setFiltroCicloDesemp] = useState("Todos");
+  var [categoriaExpandida, setCategoriaExpandida] = useState(null); // 'alto' | 'medio' | 'bajo' | null
 
   useEffect(function() { cargarTodo(); }, []);
 
@@ -481,10 +482,16 @@ function DashboardGlobal() {
   // Distribución desempeño — filtrada
   var evalLider = evsFiltradas.filter(function(e) { return e.tipo_evaluacion === 'evaluacion_lider' && e.rating_calibrado; });
   var bajo = 0; var medio = 0; var alto = 0;
+  var altoList = [], medioList = [], bajoList = [];
   evalLider.forEach(function(e) {
     var r = parseFloat(e.rating_calibrado);
-    if (r < 3) bajo++; else if (r <= 3.5) medio++; else alto++;
+    var colab = colabs.find(function(c) { return c.id === e.colaborador_id; });
+    var item = { id: e.colaborador_id, nombre: colab?.full_name || colab?.email || 'Desconocido', area: colab?.area || '-', rating: r };
+    if (r < 3) { bajo++; bajoList.push(item); } else if (r <= 3.5) { medio++; medioList.push(item); } else { alto++; altoList.push(item); }
   });
+  altoList.sort(function(a,b) { return b.rating - a.rating; });
+  medioList.sort(function(a,b) { return b.rating - a.rating; });
+  bajoList.sort(function(a,b) { return a.rating - b.rating; });
   var totalG1 = bajo + medio + alto;
 
   // OBJETIVOS — filtrar por año, área y colaborador
@@ -600,10 +607,62 @@ function DashboardGlobal() {
           <div style={s.grid}>
             <div style={s.tarjetaStat}><p style={{ color: '#64748b', fontSize: 13, margin: 0 }}>Evaluaciones lider</p><p style={{ fontSize: 32, fontWeight: 800, color: '#231F20', margin: '6px 0' }}>{evalLider.length}</p></div>
             <div style={s.tarjetaStat}><p style={{ color: '#64748b', fontSize: 13, margin: 0 }}>Calibradas</p><p style={{ fontSize: 32, fontWeight: 800, color: '#231F20', margin: '6px 0' }}>{totalG1}</p></div>
-            <div style={{ ...s.tarjetaStat, borderTop: '3px solid #166534' }}><p style={{ color: '#64748b', fontSize: 13, margin: 0 }}>Alto desempeño</p><p style={{ fontSize: 32, fontWeight: 800, color: '#166534', margin: '6px 0' }}>{alto}</p></div>
-            <div style={{ ...s.tarjetaStat, borderTop: '3px solid #64748b' }}><p style={{ color: '#64748b', fontSize: 13, margin: 0 }}>Desempeño esperado</p><p style={{ fontSize: 32, fontWeight: 800, color: '#64748b', margin: '6px 0' }}>{medio}</p></div>
-            <div style={{ ...s.tarjetaStat, borderTop: '3px solid #dc2626' }}><p style={{ color: '#64748b', fontSize: 13, margin: 0 }}>Bajo desempeño</p><p style={{ fontSize: 32, fontWeight: 800, color: '#dc2626', margin: '6px 0' }}>{bajo}</p></div>
+            <div
+              onClick={function() { setCategoriaExpandida(categoriaExpandida === 'alto' ? null : 'alto'); }}
+              style={{ ...s.tarjetaStat, borderTop: '3px solid #166534', cursor: 'pointer', outline: categoriaExpandida === 'alto' ? '2px solid #166534' : 'none' }}>
+              <p style={{ color: '#64748b', fontSize: 13, margin: 0 }}>Alto desempeño</p>
+              <p style={{ fontSize: 32, fontWeight: 800, color: '#166534', margin: '6px 0' }}>{alto}</p>
+              <p style={{ margin: 0, fontSize: 11, color: '#166534', fontWeight: 600 }}>{categoriaExpandida === 'alto' ? 'Ocultar ▲' : 'Ver quiénes ▼'}</p>
+            </div>
+            <div
+              onClick={function() { setCategoriaExpandida(categoriaExpandida === 'medio' ? null : 'medio'); }}
+              style={{ ...s.tarjetaStat, borderTop: '3px solid #64748b', cursor: 'pointer', outline: categoriaExpandida === 'medio' ? '2px solid #64748b' : 'none' }}>
+              <p style={{ color: '#64748b', fontSize: 13, margin: 0 }}>Desempeño esperado</p>
+              <p style={{ fontSize: 32, fontWeight: 800, color: '#64748b', margin: '6px 0' }}>{medio}</p>
+              <p style={{ margin: 0, fontSize: 11, color: '#64748b', fontWeight: 600 }}>{categoriaExpandida === 'medio' ? 'Ocultar ▲' : 'Ver quiénes ▼'}</p>
+            </div>
+            <div
+              onClick={function() { setCategoriaExpandida(categoriaExpandida === 'bajo' ? null : 'bajo'); }}
+              style={{ ...s.tarjetaStat, borderTop: '3px solid #dc2626', cursor: 'pointer', outline: categoriaExpandida === 'bajo' ? '2px solid #dc2626' : 'none' }}>
+              <p style={{ color: '#64748b', fontSize: 13, margin: 0 }}>Bajo desempeño</p>
+              <p style={{ fontSize: 32, fontWeight: 800, color: '#dc2626', margin: '6px 0' }}>{bajo}</p>
+              <p style={{ margin: 0, fontSize: 11, color: '#dc2626', fontWeight: 600 }}>{categoriaExpandida === 'bajo' ? 'Ocultar ▲' : 'Ver quiénes ▼'}</p>
+            </div>
           </div>
+
+          {/* Listado desplegable de personas de la categoría seleccionada */}
+          {categoriaExpandida && (function() {
+            var config = {
+              alto: { lista: altoList, color: '#166534', bg: '#dcfce7', titulo: 'Alto desempeño (3.6 – 5)' },
+              medio: { lista: medioList, color: '#64748b', bg: '#F0EDE8', titulo: 'Desempeño esperado (3 – 3.5)' },
+              bajo: { lista: bajoList, color: '#dc2626', bg: '#fee2e2', titulo: 'Bajo desempeño (1 – 2.9)' },
+            }[categoriaExpandida];
+            return (
+              <div style={{ ...s.tarjetaStat, marginTop: 14, borderLeft: '4px solid ' + config.color }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+                  <h4 style={{ margin: 0, color: config.color }}>{config.titulo} — {config.lista.length} persona(s)</h4>
+                  <button onClick={function() { setCategoriaExpandida(null); }} style={s.btnInfo}>Cerrar</button>
+                </div>
+                {config.lista.length === 0 ? (
+                  <p style={{ color: '#94a3b8', fontSize: 13, textAlign: 'center', padding: 16 }}>No hay colaboradores en esta categoría con los filtros actuales.</p>
+                ) : (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 10 }}>
+                    {config.lista.map(function(p) {
+                      return (
+                        <div key={p.id} style={{ padding: '10px 14px', borderRadius: 8, background: config.bg, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+                          <div>
+                            <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: '#231F20' }}>{p.nombre}</p>
+                            <p style={{ margin: '2px 0 0 0', fontSize: 11, color: '#64748b' }}>{p.area}</p>
+                          </div>
+                          <span style={{ fontSize: 14, fontWeight: 800, color: config.color }}>{p.rating.toFixed(1)}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
           <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', marginTop: 20 }}>
             {/* Distribución */}
             <div style={{ ...s.tarjetaStat, flex: 1, minWidth: 260 }}>
