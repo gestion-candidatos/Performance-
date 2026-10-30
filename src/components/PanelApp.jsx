@@ -5108,6 +5108,7 @@ function GestionUsuarios() {
  var [formNuevo, setFormNuevo] = useState({ email: '', full_name: '', area: '', seniority: 'Analista', role: 'colaborador', password: '' });
  var [nuevaPass, setNuevaPass] = useState('');
  var [msg, setMsg] = useState('');
+ var [msgEsError, setMsgEsError] = useState(false);
  var [guardando, setGuardando] = useState(false);
 
  var SENIORITIES = ['Analista', 'Especialista/Supervisor', 'Jefe/Experto', 'Gerente'];
@@ -5144,19 +5145,39 @@ function GestionUsuarios() {
  async function crearUsuario() {
  if (!formNuevo.email || !formNuevo.password || !formNuevo.full_name) return alert('Email, nombre y contraseña son obligatorios');
  setGuardando(true);
- // Crear en Supabase Auth via admin API — usamos signUp desde el cliente
- var { data: authData, error: authErr } = await supabase.auth.signUp({
- email: formNuevo.email,
- password: formNuevo.password,
- options: { data: { full_name: formNuevo.full_name } }
- });
- if (authErr) { setMsg('Error: ' + authErr.message); setGuardando(false); return; }
+ setMsgEsError(false);
+ var authData = null; var authErr = null;
+ try {
+   var resp = await supabase.auth.signUp({
+     email: formNuevo.email.trim(),
+     password: formNuevo.password,
+     options: { data: { full_name: formNuevo.full_name } }
+   });
+   authData = resp.data; authErr = resp.error;
+ } catch (e) { authErr = e; }
+ if (authErr) {
+   console.error('Error al crear usuario (signUp):', authErr);
+   var detalle = authErr.message;
+   if (!detalle || detalle === '{}') detalle = 'el servidor de autenticación rechazó el alta sin indicar el motivo';
+   var extra = [];
+   if (authErr.status) extra.push('código ' + authErr.status);
+   if (authErr.code) extra.push(authErr.code);
+   setMsgEsError(true);
+   setMsg('No se pudo crear el usuario: ' + detalle + (extra.length ? ' (' + extra.join(', ') + ')' : '') + '. Revisá la consola del navegador (F12) para más detalle.');
+   setGuardando(false); return;
+ }
  // Crear perfil
  if (authData?.user?.id) {
- await supabase.from('profiles').upsert({
- id: authData.user.id, email: formNuevo.email, full_name: formNuevo.full_name,
- area: formNuevo.area, seniority: formNuevo.seniority, role: formNuevo.role, activo: true
- });
+   var { error: perfErr } = await supabase.from('profiles').upsert({
+     id: authData.user.id, email: formNuevo.email.trim(), full_name: formNuevo.full_name,
+     area: formNuevo.area, seniority: formNuevo.seniority, role: formNuevo.role, activo: true
+   });
+   if (perfErr) {
+     console.error('Error al guardar el perfil:', perfErr);
+     setMsgEsError(true);
+     setMsg('El usuario se creó en el login, pero no se pudo guardar su perfil: ' + (perfErr.message || 'error sin detalle') + '. No lo cargues de nuevo con el mismo email.');
+     setGuardando(false); cargar(); return;
+   }
  }
  setMsg('Usuario creado. Debe confirmar su email para poder ingresar.');
  setModalNuevo(false);
@@ -5196,7 +5217,7 @@ function GestionUsuarios() {
  <button onClick={function() { setModalNuevo(true); }} style={{ ...s.btnPrimario, background: '#22c55e' }}>Nuevo Usuario</button>
  </div>
 
- {msg && <div style={{ padding: 12, background: '#dcfce7', border: '1px solid #86efac', borderRadius: 8, marginBottom: 16, color: '#166534', fontWeight: 600 }}>{msg}</div>}
+ {msg && <div style={{ padding: 12, background: msgEsError ? '#fee2e2' : '#dcfce7', border: '1px solid ' + (msgEsError ? '#fca5a5' : '#86efac'), borderRadius: 8, marginBottom: 16, color: msgEsError ? '#dc2626' : '#166534', fontWeight: 600 }}>{msg}</div>}
 
  <input value={busqueda} onChange={function(e) { setBusqueda(e.target.value); }}
  placeholder="Buscar por nombre o email..."
