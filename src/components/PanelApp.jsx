@@ -685,6 +685,8 @@ function DashboardGlobal() {
               <SpiderMini datos={compData} />
             </div>
           </div>
+          {/* Tiempos del ciclo: ideal vs real */}
+          <TiemposCiclo cicloFiltro={filtroCicloDesemp} />
         </div>
       )}
 
@@ -770,6 +772,306 @@ function DashboardGlobal() {
               )}
             </div>
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// =============================================
+// TIEMPOS DEL CICLO — ideal (planificado) vs real, con desvío
+// =============================================
+var ETAPAS_CICLO = [
+  { key: 'cap', nombre: 'Capacitaciones', color: '#7c3aed' },
+  { key: 'auto', nombre: 'Autoevaluación', color: '#1d4ed8' },
+  { key: 'lider', nombre: 'Evaluación de líder', color: '#0f766e' },
+  { key: 'fb', nombre: 'Feedback', color: '#b45309' },
+];
+
+// Convierte cualquier fecha/timestamp a 'YYYY-MM-DD' en hora de Buenos Aires
+function tcFechaISO(v) {
+  if (!v) return null;
+  if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
+  var d = new Date(v);
+  if (isNaN(d.getTime())) return null;
+  return d.toLocaleDateString('en-CA', { timeZone: 'America/Argentina/Buenos_Aires' });
+}
+function tcDiasEntre(a, b) {
+  if (!a || !b) return null;
+  var pa = a.split('-'), pb = b.split('-');
+  return Math.round((Date.UTC(+pb[0], +pb[1] - 1, +pb[2]) - Date.UTC(+pa[0], +pa[1] - 1, +pa[2])) / 86400000);
+}
+function tcDuracion(ini, fin) { var d = tcDiasEntre(ini, fin); return d === null ? null : d + 1; }
+function tcFmt(f) { if (!f) return '—'; var p = f.split('-'); return p[2] + '/' + p[1] + '/' + p[0].slice(2); }
+function tcMin(lista) { var l = lista.filter(Boolean).sort(); return l.length ? l[0] : null; }
+function tcMax(lista) { var l = lista.filter(Boolean).sort(); return l.length ? l[l.length - 1] : null; }
+
+function TcDesvio({ dias, chico }) {
+  if (dias === null || dias === undefined) return <span style={{ color: '#94a3b8' }}>—</span>;
+  var color = dias > 0 ? '#dc2626' : dias < 0 ? '#166534' : '#64748b';
+  var bg = dias > 0 ? '#fef2f2' : dias < 0 ? '#f0fdf4' : '#f1f5f9';
+  var texto = dias === 0 ? 'En plazo' : (dias > 0 ? '+' : '−') + Math.abs(dias) + ' día' + (Math.abs(dias) === 1 ? '' : 's');
+  if (chico) return <span style={{ color: color, fontWeight: 600 }}>{texto}</span>;
+  return <span style={{ display: 'inline-block', padding: '3px 10px', borderRadius: 12, background: bg, color: color, fontWeight: 700, fontSize: 12 }}>{texto}</span>;
+}
+
+function TiemposCiclo({ cicloFiltro }) {
+  var [ciclos, setCiclos] = useState([]);
+  var [cicloSel, setCicloSel] = useState('');
+  var [caps, setCaps] = useState([]);
+  var [crono, setCrono] = useState(null);
+  var [errTabla, setErrTabla] = useState('');
+  var [datos, setDatos] = useState({ evs: [], fbs: [], parts: 0 });
+  var [cargando, setCargando] = useState(true);
+  var [editando, setEditando] = useState(false);
+  var [form, setForm] = useState({});
+  var [guardando, setGuardando] = useState(false);
+
+  useEffect(function() {
+    (async function() {
+      var [{ data: cics }, { data: cs }] = await Promise.all([
+        supabase.from('ciclos').select('id, nombre, fecha_inicio, fecha_fin').order('fecha_inicio', { ascending: false }),
+        supabase.from('capacitaciones').select('id, nombre, fecha').eq('activo', true).order('fecha', { ascending: false }),
+      ]);
+      setCiclos(cics || []);
+      setCaps(cs || []);
+      if (cics && cics.length && !cicloSel) setCicloSel(String(cics[0].id));
+    })();
+  }, []);
+
+  // Si en el dashboard se filtra un ciclo, esta sección lo sigue
+  useEffect(function() { if (cicloFiltro && cicloFiltro !== 'Todos') setCicloSel(String(cicloFiltro)); }, [cicloFiltro]);
+
+  useEffect(function() { if (cicloSel) cargarCiclo(cicloSel); }, [cicloSel]);
+
+  async function cargarCiclo(id) {
+    setCargando(true);
+    setEditando(false);
+    var [{ data: evs }, { data: fbs }, { data: pts }, cronoRes] = await Promise.all([
+      supabase.from('evaluaciones').select('*').eq('ciclo_id', id),
+      supabase.from('feedback').select('*').eq('ciclo_id', id),
+      supabase.from('ciclo_colaboradores').select('colaborador_id').eq('ciclo_id', id),
+      supabase.from('ciclo_cronograma').select('*').eq('ciclo_id', id).order('id', { ascending: true }),
+    ]);
+    if (cronoRes.error) { setErrTabla(cronoRes.error.message); setCrono(null); }
+    else { setErrTabla(''); setCrono(cronoRes.data && cronoRes.data.length ? cronoRes.data[0] : null); }
+    setDatos({ evs: evs || [], fbs: fbs || [], parts: (pts || []).length });
+    setCargando(false);
+  }
+
+  function abrirEdicion() {
+    var f = { capacitacion_ids: (crono && Array.isArray(crono.capacitacion_ids)) ? crono.capacitacion_ids.map(String) : [] };
+    ETAPAS_CICLO.forEach(function(e) {
+      ['ini_ideal', 'fin_ideal', 'ini_real', 'fin_real'].forEach(function(c) { var k = e.key + '_' + c; f[k] = (crono && crono[k]) || ''; });
+    });
+    setForm(f);
+    setEditando(true);
+  }
+
+  async function guardar() {
+    var payload = { ciclo_id: cicloSel, capacitacion_ids: form.capacitacion_ids || [] };
+    var errores = [];
+    ETAPAS_CICLO.forEach(function(e) {
+      ['ini_ideal', 'fin_ideal', 'ini_real', 'fin_real'].forEach(function(c) { var k = e.key + '_' + c; payload[k] = form[k] || null; });
+      if (payload[e.key + '_ini_ideal'] && payload[e.key + '_fin_ideal'] && payload[e.key + '_fin_ideal'] < payload[e.key + '_ini_ideal']) errores.push(e.nombre + ': el fin ideal es anterior al inicio');
+      if (payload[e.key + '_ini_real'] && payload[e.key + '_fin_real'] && payload[e.key + '_fin_real'] < payload[e.key + '_ini_real']) errores.push(e.nombre + ': el fin real es anterior al inicio');
+    });
+    if (errores.length) return alert('Revisá las fechas:\n' + errores.join('\n'));
+    setGuardando(true);
+    var res;
+    if (crono && crono.id) res = await supabase.from('ciclo_cronograma').update(payload).eq('id', crono.id).select().single();
+    else res = await supabase.from('ciclo_cronograma').insert(payload).select().single();
+    setGuardando(false);
+    if (res.error) { alert('No se pudo guardar el cronograma: ' + res.error.message); return; }
+    setCrono(res.data);
+    setEditando(false);
+  }
+
+  // ---------- Cálculo de tiempos reales automáticos ----------
+  var hoy = tcFechaISO(new Date());
+  function etapaEval(tipo) {
+    var lista = datos.evs.filter(function(e) { return e.tipo_evaluacion === tipo; });
+    var enviadas = lista.filter(function(e) { return e.estado && e.estado !== 'borrador'; });
+    var sinFecha = enviadas.filter(function(e) { return !e.fecha_envio; }).length;
+    var total = datos.parts || lista.length;
+    return {
+      ini: tcMin(lista.map(function(e) { return tcFechaISO(e.created_at); })),
+      fin: tcMax(enviadas.map(function(e) { return tcFechaISO(e.fecha_envio); })),
+      hechos: enviadas.length, total: total,
+      enCurso: enviadas.length < total,
+      nota: sinFecha > 0 ? sinFecha + ' enviada(s) antes de registrar la fecha de envío' : '',
+    };
+  }
+  var capsCiclo = caps.filter(function(c) { return crono && Array.isArray(crono.capacitacion_ids) && crono.capacitacion_ids.map(String).includes(String(c.id)); });
+  var fbDados = datos.fbs.filter(function(f) { return f.fecha_feedback_lider; });
+  var colsConFb = [...new Set(fbDados.map(function(f) { return f.colaborador_id; }))];
+  var colsConfirm = [...new Set(datos.fbs.filter(function(f) { return f.confirmacion_colaborador; }).map(function(f) { return f.colaborador_id; }))];
+  var auto = {
+    cap: { ini: tcMin(capsCiclo.map(function(c) { return c.fecha; })), fin: tcMax(capsCiclo.map(function(c) { return c.fecha; })), hechos: capsCiclo.length, total: null, enCurso: false, nota: capsCiclo.length ? capsCiclo.length + ' capacitación(es) asociada(s)' : 'Asociá las capacitaciones en "Editar cronograma"' },
+    auto: etapaEval('autoevaluacion'),
+    lider: etapaEval('evaluacion_lider'),
+    fb: { ini: tcMin(fbDados.map(function(f) { return tcFechaISO(f.fecha_feedback_lider); })), fin: tcMax(fbDados.map(function(f) { return tcFechaISO(f.fecha_feedback_lider); })), hechos: colsConFb.length, total: datos.parts || colsConFb.length, enCurso: colsConFb.length < (datos.parts || 0), nota: colsConfirm.length + ' confirmado(s) por el colaborador' },
+  };
+
+  var filas = ETAPAS_CICLO.map(function(e) {
+    var a = auto[e.key];
+    var iniIdeal = crono ? tcFechaISO(crono[e.key + '_ini_ideal']) : null;
+    var finIdeal = crono ? tcFechaISO(crono[e.key + '_fin_ideal']) : null;
+    var iniManual = crono ? tcFechaISO(crono[e.key + '_ini_real']) : null;
+    var finManual = crono ? tcFechaISO(crono[e.key + '_fin_real']) : null;
+    var iniReal = iniManual || a.ini;
+    var finReal = finManual || (a.enCurso ? null : a.fin);
+    var enCurso = !finManual && a.enCurso && !!iniReal;
+    var finCalculo = finReal || (enCurso ? hoy : null);
+    var dIdeal = tcDuracion(iniIdeal, finIdeal);
+    var dReal = tcDuracion(iniReal, finCalculo);
+    return {
+      etapa: e, iniIdeal: iniIdeal, finIdeal: finIdeal, iniReal: iniReal, finReal: finReal, enCurso: enCurso,
+      manual: !!(iniManual || finManual), dIdeal: dIdeal, dReal: dReal, a: a,
+      desvDur: dIdeal !== null && dReal !== null ? dReal - dIdeal : null,
+      desvIni: tcDiasEntre(iniIdeal, iniReal),
+      desvFin: tcDiasEntre(finIdeal, finCalculo),
+    };
+  });
+
+  // Total del ciclo
+  var totIniIdeal = tcMin(filas.map(function(f) { return f.iniIdeal; }));
+  var totFinIdeal = tcMax(filas.map(function(f) { return f.finIdeal; }));
+  var totIniReal = tcMin(filas.map(function(f) { return f.iniReal; }));
+  var algunaEnCurso = filas.some(function(f) { return f.enCurso; });
+  var totFinReal = algunaEnCurso ? null : tcMax(filas.map(function(f) { return f.finReal; }));
+  var totDIdeal = tcDuracion(totIniIdeal, totFinIdeal);
+  var totDReal = tcDuracion(totIniReal, totFinReal || (algunaEnCurso ? hoy : null));
+  var totDesv = totDIdeal !== null && totDReal !== null ? totDReal - totDIdeal : null;
+
+  // Rango para el gráfico de línea de tiempo
+  var todas = [];
+  filas.forEach(function(f) { todas.push(f.iniIdeal, f.finIdeal, f.iniReal, f.finReal || (f.enCurso ? hoy : null)); });
+  var gMin = tcMin(todas), gMax = tcMax(todas);
+  var gTotal = gMin && gMax ? Math.max(tcDiasEntre(gMin, gMax) + 1, 1) : 0;
+  function barra(ini, fin) {
+    if (!ini || !fin || !gTotal) return null;
+    return { left: (tcDiasEntre(gMin, ini) / gTotal * 100) + '%', width: Math.max((tcDiasEntre(ini, fin) + 1) / gTotal * 100, 0.8) + '%' };
+  }
+
+  var inputFecha = { padding: '6px 8px', borderRadius: 6, border: '1px solid #e8e6e0', fontSize: 12, fontFamily: 'inherit' };
+  var selectStyle = { padding: '8px 12px', borderRadius: 8, border: '1px solid #e8e6e0', fontSize: 13, background: 'white', color: '#231F20', cursor: 'pointer' };
+
+  return (
+    <div style={{ ...s.tarjetaStat, marginTop: 20 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginBottom: 6 }}>
+        <h4 style={{ margin: 0, color: '#231F20', fontSize: 14, fontWeight: 700 }}>Tiempos del ciclo — Ideal vs Real</h4>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <select value={cicloSel} onChange={function(e) { setCicloSel(e.target.value); }} style={selectStyle}>
+            {ciclos.map(function(c) { return <option key={c.id} value={String(c.id)}>{c.nombre}</option>; })}
+          </select>
+          {!editando && !errTabla && <button onClick={abrirEdicion} style={s.btnInfo}>Editar cronograma</button>}
+        </div>
+      </div>
+      <p style={{ margin: '0 0 16px 0', fontSize: 11, color: '#94a3b8' }}>Ideal = fechas planificadas. Real = se calcula con los datos del sistema (o con la fecha cargada a mano, si la hay). Desvío positivo = más días de lo planificado.</p>
+
+      {errTabla ? (
+        <div style={{ padding: 14, background: '#fef2f2', border: '1px solid #fca5a5', borderRadius: 8, color: '#991b1b', fontSize: 13 }}>
+          No se pudo leer el cronograma ({errTabla}). Verificá que se haya creado la tabla <b>ciclo_cronograma</b> en Supabase.
+        </div>
+      ) : cargando ? <p style={{ color: '#64748b', fontSize: 13 }}>Cargando tiempos...</p> : editando ? (
+        <div>
+          <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 14 }}>
+            <thead><tr><th style={th}>Etapa</th><th style={th}>Inicio ideal</th><th style={th}>Fin ideal</th><th style={th}>Inicio real (opcional)</th><th style={th}>Fin real (opcional)</th></tr></thead>
+            <tbody>
+              {ETAPAS_CICLO.map(function(e) {
+                return <tr key={e.key}>
+                  <td style={{ ...td, fontWeight: 600, color: e.color }}>{e.nombre}</td>
+                  {['ini_ideal', 'fin_ideal', 'ini_real', 'fin_real'].map(function(c) {
+                    var k = e.key + '_' + c;
+                    return <td key={k} style={td}><input type="date" value={form[k] || ''} onChange={function(ev) { var v = ev.target.value; setForm(function(p) { var n = { ...p }; n[k] = v; return n; }); }} style={inputFecha} /></td>;
+                  })}
+                </tr>;
+              })}
+            </tbody>
+          </table>
+          <p style={{ fontSize: 11, color: '#94a3b8', margin: '0 0 14px 0' }}>Las fechas reales solo hace falta cargarlas si querés corregir lo que calcula el sistema (por ejemplo, en ciclos viejos).</p>
+          <p style={{ fontSize: 12, fontWeight: 700, color: '#64748b', margin: '0 0 8px 0' }}>Capacitaciones de este ciclo</p>
+          {caps.length === 0 ? <p style={{ fontSize: 12, color: '#94a3b8' }}>No hay capacitaciones cargadas.</p> : (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 6, maxHeight: 220, overflowY: 'auto', marginBottom: 14 }}>
+              {caps.map(function(c) {
+                var marcado = (form.capacitacion_ids || []).includes(String(c.id));
+                return <label key={c.id} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, padding: '6px 8px', borderRadius: 6, background: marcado ? '#f5f3ff' : '#fafaf9', cursor: 'pointer' }}>
+                  <input type="checkbox" checked={marcado} onChange={function() { setForm(function(p) { var ids = (p.capacitacion_ids || []).slice(); var i = ids.indexOf(String(c.id)); if (i >= 0) ids.splice(i, 1); else ids.push(String(c.id)); return { ...p, capacitacion_ids: ids }; }); }} />
+                  <span>{c.nombre} <span style={{ color: '#94a3b8' }}>· {tcFmt(tcFechaISO(c.fecha))}</span></span>
+                </label>;
+              })}
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <button onClick={function() { setEditando(false); }} style={s.btnInfo}>Cancelar</button>
+            <button onClick={guardar} disabled={guardando} style={s.btnPrimario}>{guardando ? 'Guardando...' : 'Guardar cronograma'}</button>
+          </div>
+        </div>
+      ) : (
+        <div>
+          {!crono && <div style={{ padding: 12, background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: 8, color: '#92400e', fontSize: 12, marginBottom: 14 }}>Este ciclo todavía no tiene fechas ideales. Tocá <b>Editar cronograma</b> para cargarlas.</div>}
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead><tr><th style={th}>Etapa</th><th style={th}>Ideal</th><th style={th}>Real</th><th style={{ ...th, textAlign: 'center' }}>Días ideal</th><th style={{ ...th, textAlign: 'center' }}>Días real</th><th style={{ ...th, textAlign: 'center' }}>Desvío</th></tr></thead>
+              <tbody>
+                {filas.map(function(f) {
+                  return <tr key={f.etapa.key}>
+                    <td style={td}>
+                      <span style={{ fontWeight: 700, color: f.etapa.color }}>{f.etapa.nombre}</span>
+                      {f.a.total ? <div style={{ fontSize: 11, color: '#94a3b8' }}>{f.a.hechos} de {f.a.total} completados</div> : null}
+                      {f.a.nota ? <div style={{ fontSize: 11, color: '#94a3b8' }}>{f.a.nota}</div> : null}
+                    </td>
+                    <td style={td}>{f.iniIdeal || f.finIdeal ? tcFmt(f.iniIdeal) + ' → ' + tcFmt(f.finIdeal) : <span style={{ color: '#94a3b8' }}>Sin planificar</span>}</td>
+                    <td style={td}>
+                      {f.iniReal ? tcFmt(f.iniReal) + ' → ' + (f.finReal ? tcFmt(f.finReal) : '') : <span style={{ color: '#94a3b8' }}>Sin datos</span>}
+                      {f.enCurso && <span style={{ marginLeft: 6, fontSize: 11, padding: '2px 8px', borderRadius: 10, background: '#eff6ff', color: '#1d4ed8', fontWeight: 600 }}>En curso</span>}
+                      {f.iniReal && !f.finReal && !f.enCurso && <span style={{ fontSize: 11, color: '#94a3b8' }}>sin fecha de fin</span>}
+                      {f.manual && <div style={{ fontSize: 10, color: '#94a3b8' }}>fecha cargada a mano</div>}
+                    </td>
+                    <td style={{ ...td, textAlign: 'center' }}>{f.dIdeal ?? '—'}</td>
+                    <td style={{ ...td, textAlign: 'center' }}>{f.dReal ?? '—'}{f.enCurso && f.dReal !== null ? <div style={{ fontSize: 10, color: '#94a3b8' }}>hasta hoy</div> : null}</td>
+                    <td style={{ ...td, textAlign: 'center' }}>
+                      <TcDesvio dias={f.desvDur} />
+                      {(f.desvIni !== null || f.desvFin !== null) && <div style={{ fontSize: 10, color: '#64748b', marginTop: 4 }}>Inicio: <TcDesvio dias={f.desvIni} chico /> · Fin: <TcDesvio dias={f.desvFin} chico /></div>}
+                    </td>
+                  </tr>;
+                })}
+                <tr style={{ background: '#fafaf9' }}>
+                  <td style={{ ...td, fontWeight: 800 }}>Ciclo completo</td>
+                  <td style={{ ...td, fontWeight: 600 }}>{totIniIdeal ? tcFmt(totIniIdeal) + ' → ' + tcFmt(totFinIdeal) : '—'}</td>
+                  <td style={{ ...td, fontWeight: 600 }}>{totIniReal ? tcFmt(totIniReal) + ' → ' + (totFinReal ? tcFmt(totFinReal) : 'en curso') : '—'}</td>
+                  <td style={{ ...td, textAlign: 'center', fontWeight: 700 }}>{totDIdeal ?? '—'}</td>
+                  <td style={{ ...td, textAlign: 'center', fontWeight: 700 }}>{totDReal ?? '—'}</td>
+                  <td style={{ ...td, textAlign: 'center' }}><TcDesvio dias={totDesv} /></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          {gTotal > 0 && (
+            <div style={{ marginTop: 20 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#94a3b8', marginBottom: 6, paddingLeft: 140 }}>
+                <span>{tcFmt(gMin)}</span>
+                <span style={{ display: 'flex', gap: 12 }}>
+                  <span><span style={{ display: 'inline-block', width: 10, height: 8, background: '#d6d3d1', borderRadius: 2, marginRight: 4 }} />Barra de arriba: ideal</span>
+                  <span><span style={{ display: 'inline-block', width: 10, height: 8, background: '#1d4ed8', borderRadius: 2, marginRight: 4 }} />Barra de abajo: real</span>
+                </span>
+                <span>{tcFmt(gMax)}</span>
+              </div>
+              {filas.map(function(f) {
+                var bi = barra(f.iniIdeal, f.finIdeal);
+                var br = barra(f.iniReal, f.finReal || (f.enCurso ? hoy : null));
+                return <div key={f.etapa.key} style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
+                  <span style={{ width: 140, flexShrink: 0, fontSize: 12, fontWeight: 600, color: f.etapa.color }}>{f.etapa.nombre}</span>
+                  <div style={{ flex: 1, position: 'relative', height: 26, background: '#f8fafc', borderRadius: 4 }}>
+                    {bi && <div title={'Ideal: ' + tcFmt(f.iniIdeal) + ' → ' + tcFmt(f.finIdeal)} style={{ position: 'absolute', top: 3, height: 9, left: bi.left, width: bi.width, background: '#d6d3d1', borderRadius: 3 }} />}
+                    {br && <div title={'Real: ' + tcFmt(f.iniReal) + ' → ' + (f.finReal ? tcFmt(f.finReal) : 'en curso')} style={{ position: 'absolute', top: 14, height: 9, left: br.left, width: br.width, background: f.etapa.color, opacity: f.enCurso ? 0.55 : 1, borderRadius: 3 }} />}
+                  </div>
+                </div>;
+              })}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -2347,6 +2649,8 @@ function EvaluacionLider({ colaborador, cicloId, onVolver, soloLectura }) {
  var { error: envErr } = await supabase.from('evaluaciones').update({ estado: 'enviado' }).eq('id', evId);
  if (envErr) { setMsg('Error al enviar: ' + envErr.message); return; }
  setEvalData(function(prev) { return { ...prev, estado: 'enviado' }; });
+ // Registrar fecha de envío para el panel "Tiempos del ciclo" (si la columna no existe, se ignora)
+ try { await supabase.from('evaluaciones').update({ fecha_envio: new Date() }).eq('id', evId); } catch (e) { /* ignorar */ }
  setEnviada(true);
  setMsg('Evaluacion enviada correctamente');
  }
@@ -2676,6 +2980,8 @@ function PanelColaborador({ userId, seniority, puesto, cicloId, soloLectura }) {
  var { error: envErr } = await supabase.from('evaluaciones').update({ estado: 'enviado' }).eq('id', evId);
  if (envErr) { setMsg('Error al enviar: ' + envErr.message); return; }
  setEvalData(function(prev) { return { ...prev, estado: 'enviado' }; });
+ // Registrar fecha de envío para el panel "Tiempos del ciclo" (si la columna no existe, se ignora)
+ try { await supabase.from('evaluaciones').update({ fecha_envio: new Date() }).eq('id', evId); } catch (e) { /* ignorar */ }
  // Notificar al lider
  var { data: perfColabN } = await supabase.from("profiles").select("full_name, leader_id").eq("id", userId).single();
  var { data: perfColabN } = await supabase.from("profiles").select("full_name, leader_id, email").eq("id", userId).single();
