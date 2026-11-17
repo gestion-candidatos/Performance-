@@ -826,6 +826,8 @@ function TiemposCiclo({ cicloFiltro }) {
   var [editando, setEditando] = useState(false);
   var [form, setForm] = useState({});
   var [guardando, setGuardando] = useState(false);
+  var [justEdit, setJustEdit] = useState(null); // etapa cuyo justificativo se está editando
+  var [justTexto, setJustTexto] = useState('');
 
   useEffect(function() {
     (async function() {
@@ -847,6 +849,7 @@ function TiemposCiclo({ cicloFiltro }) {
   async function cargarCiclo(id) {
     setCargando(true);
     setEditando(false);
+    setJustEdit(null);
     var [{ data: evs }, { data: fbs }, { data: pts }, cronoRes] = await Promise.all([
       supabase.from('evaluaciones').select('*').eq('ciclo_id', id),
       supabase.from('feedback').select('*').eq('ciclo_id', id),
@@ -885,6 +888,19 @@ function TiemposCiclo({ cicloFiltro }) {
     if (res.error) { alert('No se pudo guardar el cronograma: ' + res.error.message); return; }
     setCrono(res.data);
     setEditando(false);
+  }
+
+  async function guardarJustificativo(key) {
+    var payload = {};
+    payload[key + '_justificacion'] = justTexto.trim() || null;
+    setGuardando(true);
+    var res;
+    if (crono && crono.id) res = await supabase.from('ciclo_cronograma').update(payload).eq('id', crono.id).select().single();
+    else { payload.ciclo_id = cicloSel; res = await supabase.from('ciclo_cronograma').insert(payload).select().single(); }
+    setGuardando(false);
+    if (res.error) { alert('No se pudo guardar el justificativo: ' + res.error.message); return; }
+    setCrono(res.data);
+    setJustEdit(null);
   }
 
   // ---------- Cálculo de tiempos reales automáticos ----------
@@ -1016,7 +1032,32 @@ function TiemposCiclo({ cicloFiltro }) {
               <thead><tr><th style={th}>Etapa</th><th style={th}>Ideal</th><th style={th}>Real</th><th style={{ ...th, textAlign: 'center' }}>Días ideal</th><th style={{ ...th, textAlign: 'center' }}>Días real</th><th style={{ ...th, textAlign: 'center' }}>Desvío</th></tr></thead>
               <tbody>
                 {filas.map(function(f) {
-                  return <tr key={f.etapa.key}>
+                  var justif = crono ? (crono[f.etapa.key + '_justificacion'] || '') : '';
+                  var hayDesvio = f.desvDur !== null && f.desvDur !== 0;
+                  var filaJust = (hayDesvio || justif || justEdit === f.etapa.key) ? (
+                    <tr key={f.etapa.key + '_just'}>
+                      <td colSpan={6} style={{ ...td, paddingTop: 0, borderBottom: '1px solid #e8e6e0' }}>
+                        {justEdit === f.etapa.key ? (
+                          <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                            <textarea value={justTexto} onChange={function(e) { setJustTexto(e.target.value); }} placeholder={'¿Por qué hubo desvío en ' + f.etapa.nombre.toLowerCase() + '?'} style={{ ...s.textareaSmall, flex: 1, minWidth: 240 }} />
+                            <button onClick={function() { setJustEdit(null); }} style={s.btnInfo}>Cancelar</button>
+                            <button onClick={function() { guardarJustificativo(f.etapa.key); }} disabled={guardando} style={s.btnPrimario}>{guardando ? 'Guardando...' : 'Guardar'}</button>
+                          </div>
+                        ) : justif ? (
+                          <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: '8px 12px', background: '#f8fafc', borderRadius: 8, borderLeft: '3px solid ' + f.etapa.color }}>
+                            <div style={{ flex: 1, fontSize: 12, color: '#334155', whiteSpace: 'pre-wrap' }}><b>Justificativo:</b> {justif}</div>
+                            <button onClick={function() { setJustTexto(justif); setJustEdit(f.etapa.key); }} style={{ fontSize: 11, padding: '4px 10px', borderRadius: 6, border: '1px solid #cbd5e1', background: 'white', cursor: 'pointer' }}>Editar</button>
+                          </div>
+                        ) : (
+                          <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '6px 12px', background: '#fffbeb', borderRadius: 8 }}>
+                            <span style={{ flex: 1, fontSize: 12, color: '#92400e' }}>Desvío sin justificar</span>
+                            <button onClick={function() { setJustTexto(''); setJustEdit(f.etapa.key); }} style={{ fontSize: 11, padding: '4px 10px', borderRadius: 6, border: '1px solid #fcd34d', background: 'white', color: '#92400e', cursor: 'pointer', fontWeight: 600 }}>Agregar justificativo</button>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  ) : null;
+                  return [<tr key={f.etapa.key}>
                     <td style={td}>
                       <span style={{ fontWeight: 700, color: f.etapa.color }}>{f.etapa.nombre}</span>
                       {f.a.total ? <div style={{ fontSize: 11, color: '#94a3b8' }}>{f.a.hechos} de {f.a.total} completados</div> : null}
@@ -1035,7 +1076,7 @@ function TiemposCiclo({ cicloFiltro }) {
                       <TcDesvio dias={f.desvDur} />
                       {(f.desvIni !== null || f.desvFin !== null) && <div style={{ fontSize: 10, color: '#64748b', marginTop: 4 }}>Inicio: <TcDesvio dias={f.desvIni} chico /> · Fin: <TcDesvio dias={f.desvFin} chico /></div>}
                     </td>
-                  </tr>;
+                  </tr>, filaJust];
                 })}
                 <tr style={{ background: '#fafaf9' }}>
                   <td style={{ ...td, fontWeight: 800 }}>Ciclo completo</td>
